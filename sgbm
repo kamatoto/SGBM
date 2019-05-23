@@ -1,0 +1,203 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import cv2
+from PIL import Image,ImageOps
+import os
+from mpl_toolkits.mplot3d import Axes3D
+
+##### Feature points detect and matching #####
+#detector   AKAZE
+#matcher    BF,cross_check
+
+##### Semi-global matching #####
+#algorithum SGBM
+#blur       WLS
+
+HISTOGRAM_SHOW=1
+cmap="jet"  ##"Greys","jet"
+
+class Calibration_camera:
+    #change path function
+    #IN  NONE
+    #OUT NONE
+    def os_(self,stereo_image_path):
+        os.chdir(stereo_image_path)
+        print(os.getcwd())
+    def read_image(self,image_name):
+        img_init=cv2.imread(image_name,cv2.IMREAD_GRAYSCALE)
+        return img_init
+
+    def equalized(self,image_name):
+        def read_image(image_name):
+            img_init=cv2.imread(image_name,cv2.IMREAD_GRAYSCALE)
+            return img_init
+        img = Image.open(image_name)
+        img = img.convert('L')
+
+        if HISTOGRAM_SHOW:
+            plt.plot(img.histogram())
+            plt.xlim(0, 256)
+            plt.yscale("log")
+            plt.xlabel("Intensity of light")
+            plt.ylabel("points")
+            plt.show()
+        img = ImageOps.equalize(img)
+        img.save(image_name[:-4]+"_equalized.png","PNG",quality=100, optimize=True)
+        plt.imshow(img)
+        plt.show()
+        if HISTOGRAM_SHOW:
+            plt.plot(img.histogram())
+            plt.xlim(0, 256)
+            plt.xlabel("Intensity of light")
+            plt.ylabel("points")
+            plt.yscale("log")
+            plt.show()
+        img=read_image(image_name[:-4]+"_equalized.png")
+        return img
+
+    def hdr(self,image_name,image_name2):
+        img_init=cv2.imread(image_name,cv2.IMREAD_GRAYSCALE)
+        img_init2=cv2.imread(image_name2,cv2.IMREAD_GRAYSCALE)
+        img_list=[img_init,img_init2]
+    #    img_list = [cv2.imread(fn) for fn in img_fn]
+        # Mertens法によるHDR合成
+        merge_mertens = cv2.createMergeMertens()
+        res_mertens = merge_mertens.process(img_list)
+        # 8ビットデータに変換
+        res_mertens_8bit = np.clip(res_mertens*255, 0, 255).astype('uint8')
+        # 画像をファイルに保存
+        cv2.imwrite(image_name[:-9]+"HDR.jpg", res_mertens_8bit)
+
+
+    #feature points detection function
+    #IN  input_image
+    #OUT input_image,detector1,detector2
+    def feature_points(self,image):
+        akaze = cv2.AKAZE_create()                                
+        kp,des=akaze.detectAndCompute(image,None)
+        img=cv2.drawKeypoints(image,kp,None)
+        plt.imshow(img)
+        plt.savefig("detector.png",dpi=300)
+        plt.show()
+        return kp,des
+
+
+    def bf_match(self,img_init_left,img_init_right,kp1,kp2,des1,des2):
+        bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+        matches = bf.match(des1,des2)
+        matches = sorted(matches, key = lambda x:x.distance)
+        img3 = cv2.drawMatches(img_init_left,kp1,img_init_right,kp2,matches,None,flags=2)
+        plt.imshow(img3)
+        plt.savefig("matching_result.png",dpi=300)
+        plt.show()
+
+    #Semi-grobal block matching
+    #IN  image,image
+    #OUT NONE
+    def sgbm(self,img1,img2):
+    #    img_init_left=cv2.blur(img1,(5,5))
+    #    img_init_right=cv2.blur(img2,(5,5))
+
+        #SGBM法でステレオ対応点探索
+    #    cv2.StereoBM_create(numDisparities=256, blockSize=15)
+        window_size = 15
+        min_disp = 0
+        num_disp = 16*8
+        stereo = cv2.StereoSGBM_create(
+        minDisparity = min_disp,
+        numDisparities = num_disp,
+        blockSize = window_size,
+        uniquenessRatio=10,
+        disp12MaxDiff=32
+        )
+        disp=stereo.compute(img_init_left,img_init_right).astype(np.float32)/16
+        #plt.imshow(disp,cmap="Greys")
+        #plt.imshow(disp,cmap="hsv")
+        print(len(disp),len(disp[0]))
+        #disp=cv2.blur(disp,(15,15))
+
+        plt.imshow(disp,cmap=cmap)
+        plt.colorbar()
+        plt.subplots_adjust(left=0, right=1, bottom=0, top=1)
+        plt.savefig("depth_result.png",dpi=300)
+        plt.show()
+
+
+        return stereo
+
+    def wls_filter(self,img1,img2):#waighted least square
+        imgL=img_init_left
+        imgR=img_init_right
+        left_matcher=sgbm_image
+        right_matcher = cv2.ximgproc.createRightMatcher(left_matcher)
+        lmbda = 10000
+        sigma = 1.2
+        visual_multiplier = 1.0
+
+        wls_filter = cv2.ximgproc.createDisparityWLSFilter(matcher_left=left_matcher)
+        wls_filter.setLambda(lmbda)
+        wls_filter.setSigmaColor(sigma)
+        displ = left_matcher.compute(imgL, imgR)  # .astype(np.float32)/16
+        dispr = right_matcher.compute(imgR, imgL)  # .astype(np.float32)/16
+        displ = np.int16(displ)
+        dispr = np.int16(dispr)
+        filteredImg = wls_filter.filter(displ, imgL, None, dispr)  # 
+        filteredImg = cv2.normalize(src=filteredImg, dst=filteredImg, beta=0, alpha=255, norm_type=cv2.NORM_MINMAX);
+        filteredImg = np.uint8(filteredImg)
+
+        fig=plt.imshow(filteredImg,cmap=cmap)
+        plt.clim(80,120)
+        plt.colorbar()
+        plt.subplots_adjust(left=0, right=1, bottom=0, top=1)
+        plt.savefig("depth_wls_result.png",dpi=300)
+        plt.show()
+        ###
+
+        
+        
+    
+stereo_image_path=r"F:\Visual Studio 2015\Projects\SelfCalibration_StereoSfM_VS2015\City0001-Test-frameAccumu01"#stero image
+image_left=r"rectify_ceres_012_L.png"
+image_right=r"rectify_ceres_012_R.png"
+
+
+
+
+
+calibration_camera=Calibration_camera()
+##### File_path and rad image #####
+calibration_camera.os_(stereo_image_path)#file path
+img_init_left=calibration_camera.read_image(image_left)
+img_init_right=calibration_camera.read_image(image_right)
+
+#img_init_left=calibration_camera.equalized(image_left)##equalizer
+#img_init_right=calibration_camera.equalized(image_right)
+
+#calibration_camera.hdr(image_left,image_left_hdr)##HDR
+#calibration_camera.hdr(image_right,image_right_hdr)
+##### File_path and rad image #####
+
+
+##### Semi-global matching and make depth map #####
+sgbm_image=calibration_camera.sgbm(img_init_left,img_init_right)
+#calibration_camera.wls_filter(img_init_left,img_init_right)
+##### Semi-global matching and make depth map #####
+
+
+"""
+##### Crop#####
+#新しい配列に入力画像の一部を代入
+dst_l = img_init_left[350:700,150:400]
+dst_r = img_init_right[365:715,200:450]
+#書き出し
+plt.imshow(dst_l,cmap="Greys_r")
+plt.show()
+plt.imshow(dst_r,cmap="Greys_r")
+plt.show()
+edges_l = cv2.Canny(dst_l,100,200)
+plt.imshow(edges_l,cmap="Greys_r")
+plt.show()
+edges_r = cv2.Canny(dst_r,100,200)
+plt.imshow(edges_r,cmap="Greys_r")
+plt.show()
+"""
